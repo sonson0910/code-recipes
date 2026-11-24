@@ -2,14 +2,14 @@
 
 A Claude Code plugin that turns a Code Mode (REPL) script that worked into an executable recipe: parameterized code with a dry run and a test, which Claude or you can run again without redoing the reasoning. Recipes are plain files, so a team reviews them like code.
 
-## Install (local marketplace)
+## Install
 
 ```bash
-claude plugin marketplace add /path/to/code-recipes
+claude plugin marketplace add sonson0910/code-recipes
 claude plugin install code-recipes@code-recipes
 ```
 
-Run `/reload-plugins` in a session that is already open. Requires Node 20 or later.
+From a local clone, pass its path to `marketplace add` instead. Run `/reload-plugins` in a session that is already open. Requires Node 20 or later.
 
 ## What it adds
 
