@@ -13,6 +13,8 @@ claude plugin install code-recipes@code-recipes
 
 From a local clone, pass its path to `marketplace add` instead. Run `/reload-plugins` in a session that is already open. Requires Node 20 or later.
 
+The plugin only sees Code Mode sessions. Code Mode is experimental and off by default: it needs Claude Code v2.1.323 or later and `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`, either for one session (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude`) or for every session in the `env` block of `~/.claude/settings.json`. A project's settings file cannot turn it on. See [Code Mode](https://code.claude.com/docs/en/code-mode) for the account and settings requirements.
+
 ## What it adds
 
 - **Capture hook** (PostToolUse on `REPL`): when a script ends, appends its code and whether it worked (plus its `tool_use_id`, from which `recipe captures` finds the eval number `#N` in the session transcript) to `~/.claude/recipes/.captures/<session>.jsonl` (mode 0600, pruned after 14 days). It never blocks a call; its only output is the reuse note described below.
