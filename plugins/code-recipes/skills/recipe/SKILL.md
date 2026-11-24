@@ -1,6 +1,6 @@
 ---
 name: recipe
-description: Run saved executable recipes instead of redoing a task by hand, and save a Code Mode (REPL) script that worked as a recipe with params, a dry run and a test. Use when a task matches an installed recipe, when the user asks to save, reuse or replay what was just done ("save this as a recipe", "lưu thành recipe", "chạy lại cái này"), or when you are about to rewrite a multi-step script you already ran before.
+description: Run saved executable recipes instead of redoing a task by hand, and save a Code Mode (REPL) script that worked as a recipe with params, a dry run and a test. Use when a task matches an installed recipe, when the user asks to save, reuse or replay what was just done ("save this as a recipe", "lưu thành recipe", "chạy lại cái này"), when you are about to rewrite a multi-step script you already ran before, or when the code-recipes Stop hook reports scripts that repeat work from earlier sessions.
 ---
 
 # Executable recipes
@@ -94,6 +94,16 @@ export default [
 ```
 
 Each case runs in a fresh temp directory, which is the recipe's cwd. `dryRun` defaults to `true`; set `dryRun: false` to perform the actions inside that directory.
+
+## When the Stop hook reports a repeat
+
+The capture hook fingerprints each REPL script that worked and has at least 20 distinct words (a MinHash of its words; the fingerprint holds no code). When a script that worked is at least 45% alike (`RECIPES_SIMILARITY`) to one that worked in another session, or in this session at least 2 hours earlier, within the last 60 days, the Stop hook lists both before your turn ends: at most two per turn, each once. Unless the report says to ask the user (`RECIPES_AUTOSAVE=ask`), the user turned this on so that saving happens without them asking, so handle each listed script yourself:
+
+- **Worth keeping** (a task likely to come back: deploy, release, backup, environment setup, a recurring report): run the scaffold command the report gives (`recipe new <name> --from <ids>`). The scaffold holds every run whose capture is still kept; the values that differ between them are the params. Finish it as in the steps above, in the user store unless the user asked for a project recipe, and stop only when `recipe check` and `recipe test` pass.
+- **Not worth keeping** (exploration, a debugging probe, a one-off edit, a fix that will not recur): `recipe dismiss <this id>`, so scripts like it are not reported again.
+- Then tell the user in one line what you saved or dismissed.
+
+A script that an existing recipe already covers (its code is alike to the recipe's, or an earlier run it repeats is the recipe's source) is not reported; the capture hook adds a one-line note naming the recipe instead. Run that recipe the next time the task comes up. `RECIPES_AUTOSAVE=0` turns all of this off.
 
 ## Rules
 

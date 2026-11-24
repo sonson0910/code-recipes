@@ -3,6 +3,7 @@ import fss from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { features, signature, similarity, decodeSignature } from './similarity.mjs';
 
 export const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const PARAM_TYPES = ['string', 'number', 'boolean', 'array', 'object'];
@@ -146,8 +147,12 @@ export function captureId(session, code) {
   return crypto.createHash('sha256').update(String(session) + '\0' + code).digest('hex').slice(0, 8);
 }
 
+function sessionBase(session) {
+  return String(session || 'unknown').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 100);
+}
+
 function sessionFile(session) {
-  return String(session || 'unknown').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 100) + '.jsonl';
+  return sessionBase(session) + '.jsonl';
 }
 
 export async function appendCapture(rec) {
@@ -297,13 +302,182 @@ export async function pruneCaptures(days = Number(process.env.RECIPES_CAPTURE_TT
   const cutoff = Date.now() - days * 86400000;
   let files;
   try { files = await fs.readdir(dir); } catch { return 0; }
+  await pruneFingerprints(Date.now() - Math.max(days, fingerprintTtlDays()) * 86400000);
   let removed = 0;
   for (const f of files) {
-    if (!f.endsWith('.jsonl')) continue;
+    if (!f.endsWith('.jsonl') && !f.endsWith('.state.json')) continue;
     const p = path.join(dir, f);
     try {
       if ((await fs.stat(p)).mtimeMs < cutoff) { await fs.rm(p); removed++; }
     } catch { /* raced with another session */ }
   }
   return removed;
+}
+
+// ---- Automatic saving: a script that worked and repeats an earlier run is a recipe candidate.
+// For each script that worked and is big enough, the capture hook appends a fingerprint (a MinHash of the code; no code)
+// to fingerprints.ndjson and notes the earlier runs it repeats, or the recipe that already does it.
+// The Stop hook reports new repeats to Claude, a few at a time and once each.
+
+const FINGERPRINTS = 'fingerprints.ndjson';
+const DISMISSED = 'dismissed.ndjson';
+/** Scripts with fewer distinct words and word pairs than this (a git status, a file read) are too small for a recipe. */
+export const MIN_FEATURES = 20;
+/** An earlier run in the same session counts only this long before: retries come minutes apart, repeats hours apart. */
+export const SAME_SESSION_GAP_MS = 2 * 3600000;
+/** At most this many candidates per Stop, with a pause between reports, so saving never takes over a session. */
+export const MAX_PER_STOP = 2;
+export const REPORT_COOLDOWN_MS = 10 * 60000;
+const RECIPE_WORK_RE = /\brecipe\s+(?:run|new|check|test|dismiss)\b|\.claude\/recipes\b|\brecipe\.(?:mjs|json)\b/;
+
+export function similarityThreshold() {
+  const v = Number(process.env.RECIPES_SIMILARITY);
+  return v > 0 && v <= 1 ? v : 0.45;
+}
+
+/** RECIPES_AUTOSAVE: 'auto' (default) Claude saves or dismisses on its own; 'ask' Claude asks the user first; '0' or 'off'. */
+export function autosaveMode() {
+  const v = String(process.env.RECIPES_AUTOSAVE || '').trim().toLowerCase();
+  if (/^(?:0|off|false|no)$/.test(v)) return 'off';
+  return v === 'ask' ? 'ask' : 'auto';
+}
+
+/** Fingerprints hold no code, so they outlive the captures: 60 days by default catches monthly tasks. */
+export function fingerprintTtlDays() {
+  const v = Number(process.env.RECIPES_FINGERPRINT_TTL_DAYS);
+  return v > 0 ? v : 60;
+}
+
+async function readNdjson(file) {
+  let text;
+  try { text = await fs.readFile(file, 'utf8'); } catch { return []; }
+  const rows = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); } catch { /* a torn line from a crash */ }
+  }
+  return rows;
+}
+
+async function appendNdjson(file, row) {
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await fs.appendFile(file, JSON.stringify(row) + '\n', { mode: 0o600 });
+}
+
+async function recipeSignatures(cwd) {
+  const out = [];
+  for (const r of await listRecipes(cwd).catch(() => [])) {
+    const ids = ((r.manifest && r.manifest.source && r.manifest.source.captures) || []).map((c) => c && c.id).filter(Boolean);
+    let sig = null;
+    try { sig = decodeSignature(signature(features(await fs.readFile(r.entry, 'utf8')))); } catch { /* no recipe.mjs */ }
+    out.push({ name: r.name, ids, sig });
+  }
+  return out;
+}
+
+const round2 = (x) => Math.round(x * 100) / 100;
+
+/**
+ * What a fingerprint repeats: { repeats } with earlier runs, best first, or { recipe } when a recipe already does it
+ * (its code is alike, or an earlier run it repeats is the source of a recipe). Dismissed scripts give neither.
+ */
+export async function findRepeats(fp, { cwd, prints, threshold = similarityThreshold() } = {}) {
+  const dir = capturesDir();
+  const [all, dismissed, recipes] = await Promise.all([
+    prints || readNdjson(path.join(dir, FINGERPRINTS)), readNdjson(path.join(dir, DISMISSED)), recipeSignatures(cwd),
+  ]);
+  const sig = decodeSignature(fp.sig);
+  if (!sig || dismissed.some((d) => similarity(d.sig, sig) >= threshold)) return { repeats: [] };
+  let recipe = null;
+  for (const r of recipes) {
+    const s = r.sig ? similarity(r.sig, sig) : 0;
+    if (s >= threshold && (!recipe || s > recipe.score)) recipe = { name: r.name, score: round2(s) };
+  }
+  const t = Date.parse(fp.ts);
+  const best = new Map();
+  for (const p of all) {
+    if ((p.status && p.status !== 'ok') || !(p.n >= MIN_FEATURES)) continue;
+    if (p.session === fp.session && !(t - Date.parse(p.ts) >= SAME_SESSION_GAP_MS)) continue;
+    const score = similarity(p.sig, sig);
+    if (score < threshold || (best.has(p.id) && best.get(p.id).score >= score)) continue;
+    best.set(p.id, { id: p.id, session: p.session, ts: p.ts, score: round2(score), description: p.description || undefined });
+  }
+  const repeats = [...best.values()].sort((a, b) => b.score - a.score);
+  if (!recipe) {
+    const saved = new Map();
+    for (const r of recipes) for (const id of r.ids) saved.set(id, r.name);
+    const hit = repeats.find((r) => saved.has(r.id));
+    if (hit) recipe = { name: saved.get(hit.id), score: hit.score };
+  }
+  return recipe ? { repeats: [], recipe } : { repeats: repeats.slice(0, 3) };
+}
+
+/** For a script that worked and is big enough, appends its fingerprint with what it repeats; null for other scripts. */
+export async function recordFingerprint(rec, { cwd } = {}) {
+  if (!rec || rec.status !== 'ok' || typeof rec.code !== 'string' || autosaveMode() === 'off' || RECIPE_WORK_RE.test(rec.code)) return null;
+  const feats = features(rec.code);
+  if (feats.size < MIN_FEATURES) return null;
+  const fp = {
+    v: 2, id: rec.id, session: rec.session, ts: rec.ts, toolUseId: rec.toolUseId || undefined,
+    description: rec.description || undefined, n: feats.size, sig: signature(feats),
+  };
+  const found = await findRepeats(fp, { cwd: cwd || rec.cwd || undefined });
+  if (found.repeats.length) fp.repeats = found.repeats;
+  if (found.recipe) fp.recipe = found.recipe;
+  await appendNdjson(path.join(capturesDir(), FINGERPRINTS), fp);
+  return fp;
+}
+
+/** True while the capture file of a session is still kept, so its scripts can seed a recipe. */
+export function hasCaptureFile(session) {
+  return fss.existsSync(path.join(capturesDir(), sessionFile(session)));
+}
+
+/**
+ * Unreported repeats of this session, at most MAX_PER_STOP (best first, one per earlier run, the latest run wins),
+ * and none within REPORT_COOLDOWN_MS of the last report. Marks what it returns, and the runs those supersede, as reported.
+ */
+export async function takeUnreportedRepeats(session, now = Date.now()) {
+  const dir = capturesDir();
+  const mine = (await readNdjson(path.join(dir, FINGERPRINTS))).filter((p) => p.session === session && Array.isArray(p.repeats) && p.repeats.length);
+  if (!mine.length) return [];
+  const stateFile = path.join(dir, sessionBase(session) + '.state.json');
+  let state = {};
+  try { state = JSON.parse(await fs.readFile(stateFile, 'utf8')) || {}; } catch { /* first report */ }
+  if (state.lastReport && now - Date.parse(state.lastReport) < REPORT_COOLDOWN_MS) return [];
+  const reported = new Set(Array.isArray(state.reported) ? state.reported : []);
+  const byEarlier = new Map();
+  for (const p of mine) {
+    if (reported.has(p.id)) continue;
+    byEarlier.delete(p.repeats[0].id);
+    byEarlier.set(p.repeats[0].id, p);
+  }
+  const fresh = [...byEarlier.values()].sort((a, b) => b.repeats[0].score - a.repeats[0].score).slice(0, MAX_PER_STOP);
+  if (!fresh.length) return [];
+  const covered = new Set(fresh.map((p) => p.repeats[0].id));
+  const newly = mine.filter((p) => !reported.has(p.id) && covered.has(p.repeats[0].id)).map((p) => p.id);
+  state.reported = [...reported, ...new Set(newly)];
+  state.lastReport = new Date(now).toISOString();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(stateFile, JSON.stringify(state) + '\n', { mode: 0o600 });
+  for (const p of fresh) for (const r of p.repeats) r.captured = hasCaptureFile(r.session);
+  return fresh;
+}
+
+/** Remembers a script's fingerprint so scripts like it are not suggested as recipes again. */
+export async function dismissCapture(c) {
+  const row = { ts: new Date().toISOString(), id: c.id, description: c.description || undefined, sig: signature(features(c.code)) };
+  await appendNdjson(path.join(capturesDir(), DISMISSED), row);
+  return row;
+}
+
+async function pruneFingerprints(cutoff) {
+  const file = path.join(capturesDir(), FINGERPRINTS);
+  const rows = await readNdjson(file);
+  const keep = rows.filter((r) => Date.parse(r.ts) >= cutoff);
+  if (keep.length === rows.length) return 0;
+  const tmp = file + '.' + process.pid + '.tmp';
+  await fs.writeFile(tmp, keep.map((r) => JSON.stringify(r) + '\n').join(''), { mode: 0o600 });
+  await fs.rename(tmp, file);
+  return rows.length - keep.length;
 }

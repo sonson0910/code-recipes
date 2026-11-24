@@ -1,10 +1,12 @@
 // PostToolUse hook for the REPL tool: appends the script and whether it worked to the session's capture file.
-// It prints nothing and always exits 0, so it never changes what Claude sees or blocks a call.
+// It always exits 0 and never blocks a call. For a script that worked it also appends a fingerprint and notes the earlier
+// runs it repeats (reported by hooks/stop.mjs). Its only output is a one-line note when a recipe already does what the
+// script did, so Claude runs the recipe next time.
 // Claude Code runs it once, when the script ends. The payload has the code, result and error but not the eval number,
 // and the receipt "(dispatched #N)" may not be in the transcript yet, so the record keeps the transcript path and
 // tool_use_id and the recipe CLI looks the number up when it reads captures.
 import { pathToFileURL } from 'node:url';
-import { appendCapture, captureId } from '../lib/store.mjs';
+import { appendCapture, captureId, recordFingerprint } from '../lib/store.mjs';
 
 const MAX_CODE = 256 * 1024;
 const RECEIPT = /^\s*\(dispatched #(\d+)\)\s*$/;
@@ -40,13 +42,21 @@ export function captureRecord(ev, now = new Date()) {
   };
 }
 
+export function reuseNote({ name, score }) {
+  return 'code-recipes: this script did what recipe "' + name + '" does (' + Math.round(score * 100) + '% alike). Next time run `recipe run ' + name + '` (params: `recipe show ' + name + '`) instead of writing the script again.';
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     let raw = '';
     for await (const chunk of process.stdin) raw += chunk;
     const ev = JSON.parse(raw);
     const rec = captureRecord(ev);
-    if (rec) await appendCapture(rec);
+    if (rec) {
+      await appendCapture(rec);
+      const fp = await recordFingerprint(rec, { cwd: ev.cwd });
+      if (fp && fp.recipe) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: reuseNote(fp.recipe) } }) + '\n');
+    }
   } catch {
     // A capture failure must never disturb the session.
   }

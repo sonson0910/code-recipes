@@ -4,7 +4,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   listRecipes, findRecipe, readCaptures, resolveCapture, fillEvalIds, userRecipesDir, projectRecipesDir,
-  capturesDir, gitRoot, NAME_RE, indexText, indexLines, hasSideEffects,
+  capturesDir, gitRoot, NAME_RE, indexText, indexLines, hasSideEffects, dismissCapture,
 } from './store.mjs';
 import { runRecipe, runTests } from './runtime.mjs';
 import { scaffold, analyzeCode, checkRecipe } from './authoring.mjs';
@@ -30,11 +30,14 @@ Usage:
   recipe capture <id|#eval>                  print one captured script
   recipe new <name> (--from <id|#eval>[,...] | --file PATH) [--project] [-d TEXT] [--force]
                                              scaffold a recipe from captured scripts
+  recipe dismiss <id|#eval>[,...]            stop suggesting scripts like these as recipes
   recipe index                               the recipe index the SessionStart hook prints
   recipe where                               directories in use
 
 Environment: RECIPES_HOME (user recipes, default ~/.claude/recipes), RECIPES_CAPTURE_DIR,
-RECIPES_CAPTURE_TTL_DAYS (default 14), RECIPES_SHELL (default /bin/bash), RECIPES_DEBUG.
+RECIPES_CAPTURE_TTL_DAYS (default 14), RECIPES_FINGERPRINT_TTL_DAYS (default 60),
+RECIPES_AUTOSAVE (auto by default; ask, or 0 to turn off), RECIPES_SIMILARITY (default 0.45),
+RECIPES_SHELL (default /bin/bash), RECIPES_DEBUG.
 `;
 
 const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
@@ -252,6 +255,16 @@ async function cmdCapture(args) {
   return 0;
 }
 
+async function cmdDismiss(args) {
+  const { positionals } = parse(args, {});
+  const refs = positionals.flatMap((p) => p.split(',')).map((s) => s.trim()).filter(Boolean);
+  if (!refs.length) throw usage('usage: recipe dismiss <id|#eval>[,...]');
+  const caps = await findCaptures(refs);
+  for (const c of caps) await dismissCapture(c);
+  out('Dismissed ' + caps.map((c) => c.id).join(', ') + ': scripts like ' + (caps.length > 1 ? 'these' : 'this one') + ' will not be suggested as recipes again.');
+  return 0;
+}
+
 async function cmdNew(args) {
   const { values, positionals } = parse(args, {
     from: { type: 'string' }, file: { type: 'string' }, project: { type: 'boolean' },
@@ -318,7 +331,7 @@ async function cmdWhere(args) {
 
 const COMMANDS = {
   list: cmdList, show: cmdShow, run: cmdRun, test: cmdTest, check: cmdCheck,
-  captures: cmdCaptures, capture: cmdCapture, new: cmdNew, index: cmdIndex, where: cmdWhere,
+  captures: cmdCaptures, capture: cmdCapture, new: cmdNew, dismiss: cmdDismiss, index: cmdIndex, where: cmdWhere,
 };
 
 export async function main(argv) {
