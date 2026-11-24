@@ -1,5 +1,7 @@
 # code-recipes
 
+![code-recipes: Code Mode writes the code, code-recipes keeps it](assets/banner.jpg)
+
 A Claude Code plugin that turns a Code Mode (REPL) script that worked into an executable recipe: parameterized code with a dry run and a test, which Claude or you can run again without redoing the reasoning. Recipes are plain files, so a team reviews them like code.
 
 ## Install
