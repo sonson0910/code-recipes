@@ -1,0 +1,10 @@
+#!/usr/bin/env -S node --no-warnings
+'use strict';
+// Launcher kept in CommonJS so it works through a symlink and without a package.json type.
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+
+import(pathToFileURL(path.join(__dirname, '..', 'lib', 'cli.mjs')).href)
+  .then((m) => m.main(process.argv.slice(2)))
+  .then((code) => { process.exitCode = code == null ? 0 : code; })
+  .catch((e) => { process.stderr.write(String((e && e.stack) || e) + '\n'); process.exitCode = 1; });

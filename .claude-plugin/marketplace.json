@@ -1,0 +1,16 @@
+{
+  "name": "code-recipes",
+  "owner": {
+    "name": "sonson0910"
+  },
+  "metadata": {
+    "description": "Local marketplace for the code-recipes plugin"
+  },
+  "plugins": [
+    {
+      "name": "code-recipes",
+      "source": "./plugins/code-recipes",
+      "description": "Save Code Mode scripts that worked as parameterized, dry-runnable, tested recipes and run them again."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "code-recipes",
+  "private": true,
+  "scripts": {
+    "test": "node --test \"plugins/code-recipes/test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

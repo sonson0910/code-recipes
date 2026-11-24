@@ -1,0 +1,14 @@
+{
+  "name": "code-recipes",
+  "version": "0.1.0",
+  "description": "Captures Code Mode (REPL) scripts and turns the ones that worked into executable recipes: parameters, dry-run, a test, and a CLI to run them.",
+  "license": "MIT",
+  "keywords": [
+    "code-mode",
+    "recipes",
+    "automation"
+  ],
+  "author": {
+    "name": "sonson0910"
+  }
+}
